@@ -5,44 +5,37 @@ import TodoList from './Components/TodoList';
 import Auth from './Components/Auth';
 import { supabase } from './lib/supabaseClient';
 
-function App() {
-  const [user, setUser] = useState(null);
+export default function App() {
+  const [session, setSession] = useState(null);
   const [todos, setTodos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [filter, setFilter] = useState('all');
 
-  // 1. Supabase Auth Session Check & Listener
+  // 1. Auth state change listener
   useEffect(() => {
-    // Current user session check karein
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
+      setSession(session);
     });
 
-    // Realtime auth state change listen karein (Login/Logout)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
-  // 2. Fetch Tasks jab user logged in ho
-  useEffect(() => {
-    if (user) {
-      fetchTasks();
-    } else {
-      setTodos([]);
-    }
-  }, [user]);
-
+  // 2. Fetch tasks for the authenticated user only
   const fetchTasks = async () => {
+    if (!session?.user) return;
     setLoading(true);
     setErrorMessage('');
 
     const { data, error } = await supabase
       .from('tasks')
       .select('*')
+      .eq('user_id', session.user.id) // Strict user_id filtering
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -53,177 +46,100 @@ function App() {
     setLoading(false);
   };
 
-  // 3. Auth Handlers (Login & Signup with Dynamic Email Redirect)
-  const handleAuthSubmit = async ({ email, password, isSignUp }) => {
-    setLoading(true);
-    setErrorMessage('');
-
-    if (isSignUp) {
-      // User Signup with emailRedirectTo option
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          // Localhost ho ya live domain, yeh automatic current URL uthayega
-          emailRedirectTo: window.location.origin,
-        },
-      });
-
-      if (error) {
-        setErrorMessage(error.message);
-      } else {
-        alert('Signup successful! Apni email open karke confirmation link par click karein.');
-      }
+  // User/Session change hone par tasks refresh karein
+  useEffect(() => {
+    if (session?.user) {
+      fetchTasks();
     } else {
-      // User Login
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (error) {
-        setErrorMessage(error.message);
-      }
+      setTodos([]);
     }
-    setLoading(false);
-  };
+  }, [session]);
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    setUser(null);
-  };
-
-  // 4. Database CRUD Operations
-  const handleAddTask = async (titleText) => {
-    setErrorMessage('');
+  // 3. Add new task
+  const addTask = async (title) => {
+    if (!title.trim() || !session?.user) return;
 
     const { data, error } = await supabase
       .from('tasks')
-      .insert([{ title: titleText, is_completed: false, user_id: user?.id }])
+      .insert([
+        {
+          title: title.trim(),
+          user_id: session.user.id, // Task user se attach hoga
+          is_completed: false,
+        },
+      ])
       .select();
 
     if (error) {
-      setErrorMessage(`Task save nahi ho saka: ${error.message}`);
+      setErrorMessage(`Task add nahi ho saka: ${error.message}`);
     } else if (data) {
-      setTodos([data[0], ...todos]);
+      setTodos((prev) => [data[0], ...prev]);
     }
   };
 
-  const handleToggle = async (id) => {
-    const taskToToggle = todos.find((todo) => todo.id === id);
-    if (!taskToToggle) return;
-    const updatedStatus = !taskToToggle.is_completed;
-
+  // 4. Toggle task completion status
+  const toggleTask = async (id, currentStatus) => {
     const { error } = await supabase
       .from('tasks')
-      .update({ is_completed: updatedStatus })
-      .eq('id', id);
+      .update({ is_completed: !currentStatus })
+      .eq('id', id)
+      .eq('user_id', session.user.id);
 
     if (error) {
-      setErrorMessage(`Status update nahi hua: ${error.message}`);
+      setErrorMessage(`Task update nahi ho saka: ${error.message}`);
     } else {
-      setTodos(
-        todos.map((todo) =>
-          todo.id === id ? { ...todo, is_completed: updatedStatus } : todo
+      setTodos((prev) =>
+        prev.map((todo) =>
+          todo.id === id ? { ...todo, is_completed: !currentStatus } : todo
         )
       );
     }
   };
 
-  const handleEdit = async (id, newTitle) => {
-    const { error } = await supabase
-      .from('tasks')
-      .update({ title: newTitle })
-      .eq('id', id);
-
-    if (error) {
-      setErrorMessage(`Task edit nahi hua: ${error.message}`);
-    } else {
-      setTodos(
-        todos.map((todo) =>
-          todo.id === id ? { ...todo, title: newTitle } : todo
-        )
-      );
-    }
-  };
-
-  const handleDelete = async (id) => {
+  // 5. Delete task
+  const deleteTask = async (id) => {
     const { error } = await supabase
       .from('tasks')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .eq('user_id', session.user.id);
 
     if (error) {
-      setErrorMessage(`Task delete nahi hua: ${error.message}`);
+      setErrorMessage(`Task delete nahi ho saka: ${error.message}`);
     } else {
-      setTodos(todos.filter((todo) => todo.id !== id));
+      setTodos((prev) => prev.filter((todo) => todo.id !== id));
     }
   };
 
-  const filteredTodos = todos.filter((todo) => {
-    if (filter === 'active') return !todo.is_completed;
-    if (filter === 'completed') return todo.is_completed;
-    return true;
-  });
+  // Agar user logged in nahi hai toh Auth screen dikhayein
+  if (!session) {
+    return <Auth />;
+  }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 font-sans">
-      <Navbar user={user} onLogout={handleLogout} />
+    <div className="min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-100">
+      <Navbar user={session.user} />
+      <main className="max-w-2xl mx-auto px-4 py-8">
+        <h1 className="text-3xl font-bold text-center mb-6">My To-Do List</h1>
 
-      {!user ? (
-        /* Unauthenticated View: Auth Form */
-        <Auth
-          onAuthSubmit={handleAuthSubmit}
-          loading={loading}
-          errorMessage={errorMessage}
-        />
-      ) : (
-        /* Authenticated View: Main App */
-        <main className="max-w-xl mx-auto mt-10 p-6 bg-white rounded-xl shadow-sm border border-slate-200">
-          <h2 className="text-xl font-bold mb-4 text-slate-800">My Tasks</h2>
-
-          {errorMessage && (
-            <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 text-sm rounded-lg">
-              {errorMessage}
-            </div>
-          )}
-
-          <TodoInput onAddTask={handleAddTask} />
-
-          {/* Filter Buttons */}
-          <div className="flex gap-2 mb-4 border-b border-slate-200 pb-3">
-            {['all', 'active', 'completed'].map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-3 py-1 text-xs rounded-md capitalize font-medium transition ${
-                  filter === f
-                    ? 'bg-slate-800 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {f}
-              </button>
-            ))}
+        {errorMessage && (
+          <div className="bg-red-100 text-red-700 p-3 rounded mb-4 text-sm">
+            {errorMessage}
           </div>
+        )}
 
-          {/* Task List */}
-          {loading ? (
-            <div className="text-center py-6 text-slate-500 text-sm">
-              Database se tasks load ho rahe hain...
-            </div>
-          ) : (
-            <TodoList
-              todos={filteredTodos}
-              onToggle={handleToggle}
-              onDelete={handleDelete}
-              onEdit={handleEdit}
-            />
-          )}
-        </main>
-      )}
+        <TodoInput onAddTask={addTask} />
+
+        {loading ? (
+          <p className="text-center text-gray-500 mt-6">Tasks loading...</p>
+        ) : (
+          <TodoList
+            todos={todos}
+            onToggleTask={toggleTask}
+            onDeleteTask={deleteTask}
+          />
+        )}
+      </main>
     </div>
   );
 }
-
-export default App;
