@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import Navbar from './components/Navbar';
-import TodoInput from './components/TodoInput';
-import TodoList from './components/TodoList';
-import Auth from './components/Auth';
+import Navbar from './Components/Navbar';
+import TodoInput from './Components/TodoInput';
+import TodoList from './Components/TodoList';
+import Auth from './Components/Auth';
 import { supabase } from './lib/supabaseClient';
 
 function App() {
